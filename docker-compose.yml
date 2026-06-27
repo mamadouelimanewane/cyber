@@ -1,0 +1,235 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gravity Security — Déploiement complet 3 niveaux pour 10 000 machines
+#
+# Démarrage rapide :
+#   docker-compose up -d
+#
+# Démarrage avec scale collectors :
+#   docker-compose up -d --scale collector=5
+#
+# Accès :
+#   Dashboard   http://localhost:5190
+#   API Central http://localhost:8000/docs
+#   Grafana     http://localhost:3001  (admin/gravity)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── INFRASTRUCTURE ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: gravity-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gravity
+      POSTGRES_USER: gravity
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gravity-secret-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gravity"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - gravity-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: gravity-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - gravity-internal
+
+  # ── NIVEAU 3 : SERVEUR CENTRAL ───────────────────────────────────────────────
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: gravity-server
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://gravity:${DB_PASSWORD:-gravity-secret-change-me}@postgres:5432/gravity
+      REDIS_URL: redis://redis:6379
+      SHARED_SECRET: ${SHARED_SECRET:-gravity-security-secret-change-me}
+      WORKERS: ${SERVER_WORKERS:-4}
+      LOG_LEVEL: info
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - gravity-internal
+      - gravity-public
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── NIVEAU 2 : COLLECTORS RÉGIONAUX ──────────────────────────────────────────
+  # scale: docker-compose up --scale collector=N
+
+  collector:
+    build:
+      context: ./collector
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      CENTRAL_URL: http://server:8000
+      SHARED_SECRET: ${SHARED_SECRET:-gravity-security-secret-change-me}
+      MAX_AGENTS: 1000
+      FLUSH_INTERVAL: 3.0
+      MIN_SEVERITY: 0.0
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - gravity-internal
+      - gravity-agents
+    # Le load balancer Nginx expose le port 8001 vers les agents
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  # ── Load balancer des collectors ──────────────────────────────────────────────
+
+  collector-lb:
+    image: nginx:alpine
+    container_name: gravity-collector-lb
+    restart: unless-stopped
+    volumes:
+      - ./nginx/collector.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8001:8001"    # Port agents → collectors
+    depends_on:
+      - collector
+    networks:
+      - gravity-internal
+      - gravity-agents
+
+  # ── NIVEAU 1 : AGENT (dev/test uniquement) ────────────────────────────────────
+
+  agent-demo:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    container_name: gravity-agent-demo
+    restart: unless-stopped
+    environment:
+      AGENT_ID: agent-demo-001
+      COLLECTOR_URL: http://collector-lb:8001
+      SHARED_SECRET: ${SHARED_SECRET:-gravity-security-secret-change-me}
+    depends_on:
+      - collector-lb
+    networks:
+      - gravity-agents
+    profiles:
+      - demo  # Activé seulement avec --profile demo
+
+  # ── DASHBOARD ─────────────────────────────────────────────────────────────────
+
+  console:
+    build:
+      context: ./console
+      dockerfile: Dockerfile
+    container_name: gravity-console
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000/ws
+    ports:
+      - "5190:80"
+    depends_on:
+      - server
+    networks:
+      - gravity-public
+
+  # ── SIMULATEUR 10 000 AGENTS (test de charge) ────────────────────────────────
+
+  load-simulator:
+    build:
+      context: .
+      dockerfile: demo/Dockerfile.simulator
+    container_name: gravity-load-sim
+    restart: "no"
+    environment:
+      TARGET_URL: http://collector-lb:8001
+      NUM_AGENTS: ${SIM_AGENTS:-100}
+      ALERTS_PER_MIN: ${SIM_RATE:-10}
+      SHARED_SECRET: ${SHARED_SECRET:-gravity-security-secret-change-me}
+    depends_on:
+      - collector-lb
+    networks:
+      - gravity-agents
+    profiles:
+      - loadtest
+
+  # ── MONITORING ────────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gravity-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - gravity-internal
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gravity-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-gravity}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - gravity-internal
+    profiles:
+      - monitoring
+
+networks:
+  gravity-public:
+    driver: bridge
+  gravity-internal:
+    driver: bridge
+    internal: true   # Pas d'accès internet direct
+  gravity-agents:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
