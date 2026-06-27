@@ -1,0 +1,5 @@
+psutil>=5.9.0
+cryptography>=42.0.0
+scapy>=2.5.0
+pywin32>=306; sys_platform == "win32"
+requests>=2.31.0
