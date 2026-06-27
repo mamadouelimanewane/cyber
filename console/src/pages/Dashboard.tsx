@@ -12,10 +12,11 @@ import ThreatHunterChat from "../components/ThreatHunterChat";
 import DeceptionStatus from "../components/deception/DeceptionStatus";
 import ThreatIntelFeed from "../components/ThreatIntelFeed";
 import PatentDashboard from "../components/patent/PatentDashboard";
+import ScaleView from "../components/ScaleView";
 import { useSecurityStore } from "../store/securityStore";
 import { connectWebSocket } from "../api/websocket";
 
-type TabId = "overview" | "killchain" | "hunter" | "deception" | "intel" | "patent";
+type TabId = "overview" | "killchain" | "hunter" | "deception" | "intel" | "patent" | "scale";
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode; color: string }[] = [
   { id: "overview", label: "Vue Générale", icon: <Activity className="w-4 h-4" />, color: "emerald" },
@@ -24,6 +25,7 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode; color: string }[]
   { id: "deception", label: "Deception Engine", icon: <Eye className="w-4 h-4" />, color: "orange" },
   { id: "intel", label: "Threat Intel", icon: <Globe className="w-4 h-4" />, color: "blue" },
   { id: "patent", label: "IA Brevets", icon: <Lock className="w-4 h-4" />, color: "violet" },
+  { id: "scale", label: "Scale 10k", icon: <Globe className="w-4 h-4" />, color: "blue" },
 ];
 
 export default function Dashboard() {
@@ -146,6 +148,10 @@ export default function Dashboard() {
 
         {activeTab === "patent" && (
           <PatentDashboard />
+        )}
+
+        {activeTab === "scale" && (
+          <ScaleView />
         )}
       </main>
     </div>

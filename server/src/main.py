@@ -19,6 +19,7 @@ from .db.database import Database
 from .engine.threat_engine import ThreatEngine
 from .api.routes import router
 from .patent_orchestrator import PatentOrchestrator
+from .cluster.bulk_processor import BulkProcessor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gravity.server")
@@ -44,6 +45,14 @@ patent_orchestrator = PatentOrchestrator()
 
 # WebSocket connections pour le dashboard temps réel
 ws_clients: List[WebSocket] = []
+
+# BulkProcessor — traitement haute performance pour 10 000 agents
+bulk_processor = BulkProcessor(
+    on_critical=lambda alert: _broadcast_ws({"event": "new_alert", "alert": alert}),
+    on_bulk_save=lambda alerts: asyncio.get_event_loop().run_in_executor(
+        None, db.save_alerts_bulk, alerts
+    ),
+)
 
 
 # ------------------------------------------------------------------ #
@@ -215,6 +224,66 @@ async def receive_patent_alert(alert: Dict[str, Any]):
     return {"status": "ok"}
 
 
+# ── Endpoints Scale 10 000 agents ─────────────────────────────────────────────
+
+@app.post("/api/alerts/bulk")
+async def receive_bulk_alerts(request: Request):
+    """
+    Endpoint haute performance pour les collectors régionaux.
+    Reçoit des batches compressés de centaines d'alertes à la fois.
+    Cible : 10 000 agents × 2 alertes/min = 333 alertes/sec.
+    """
+    body = await request.body()
+    encoding = request.headers.get("Content-Encoding", "")
+    collector_id = request.headers.get("X-Collector-ID", "direct-agent")
+
+    result = await bulk_processor.ingest_bulk(body, encoding, collector_id)
+    return result
+
+
+@app.get("/api/scale/status")
+async def scale_status():
+    """Vue d'ensemble de la capacité et de la charge actuelle."""
+    bulk_stats = bulk_processor.get_stats()
+    return {
+        "architecture": "3-tier (agents → collectors → cluster)",
+        "target_capacity": "10 000 agents",
+        "bulk_processor": bulk_stats,
+        "collectors": bulk_processor.collectors,
+        "db_backend": "PostgreSQL (prod) / SQLite (dev)",
+        "recommendations": _get_scale_recommendations(bulk_stats),
+    }
+
+
+@app.get("/api/scale/collectors")
+async def get_collectors():
+    """Liste tous les collectors connectés et leur statut."""
+    return {
+        "collectors": bulk_processor.collectors,
+        "total": len(bulk_processor.collectors),
+        "online": sum(1 for c in bulk_processor.collectors.values() if c.get("online")),
+    }
+
+
+def _get_scale_recommendations(stats: Dict) -> List[str]:
+    """Génère des recommandations d'échelle basées sur la charge actuelle."""
+    recs = []
+    rps = stats.get("throughput_rps", 0)
+    if rps > 500:
+        recs.append("Ajouter un nœud FastAPI supplémentaire (load balancer Nginx)")
+    if stats.get("queue", {}).get("normal_pending", 0) > 10_000:
+        recs.append("Augmenter BULK_FLUSH_INTERVAL ou ajouter un worker DB")
+    if len(bulk_processor.collectors) > 15:
+        recs.append("Passer à Kafka pour le bus de messages inter-collectors")
+    if rps < 50:
+        recs.append("Capacité nominale — aucune action requise")
+    return recs or ["Système nominal"]
+
+
+# Import manquant pour le nouveau endpoint bulk
+from fastapi import Request
+
+
 # ------------------------------------------------------------------ #
 #  WebSocket — Dashboard temps réel                                  #
 # ------------------------------------------------------------------ #
@@ -266,7 +335,8 @@ async def _broadcast_ws(message: Dict):
 async def startup():
     app.state.start_time = time.time()
     db.initialize()
-    logger.info("Gravity Security Server démarré")
+    await bulk_processor.start()
+    logger.info("Gravity Security Server démarré — mode 10 000 agents activé")
 
 
 if __name__ == "__main__":
