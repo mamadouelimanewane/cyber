@@ -20,6 +20,7 @@ from .engine.threat_engine import ThreatEngine
 from .api.routes import router
 from .patent_orchestrator import PatentOrchestrator
 from .cluster.bulk_processor import BulkProcessor
+from .incident_response import IncidentResponseEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gravity.server")
@@ -43,12 +44,23 @@ db = Database()
 threat_engine = ThreatEngine()
 patent_orchestrator = PatentOrchestrator()
 
+# Incident Response Engine — corrélation + playbooks automatiques
+async def _on_incident_opened(incident):
+    await _broadcast_ws({"event": "incident_opened", "incident": incident.to_dict()})
+    logger.warning(f"[INCIDENT] {incident.severity.value.upper()} — {incident.title}")
+
+ire = IncidentResponseEngine(
+    on_incident_opened=_on_incident_opened,
+    on_incident_updated=lambda inc: _broadcast_ws({"event": "incident_updated", "incident": inc.to_dict()}),
+)
+
 # WebSocket connections pour le dashboard temps réel
 ws_clients: List[WebSocket] = []
 
 # BulkProcessor — traitement haute performance pour 10 000 agents
 bulk_processor = BulkProcessor(
     on_critical=lambda alert: _broadcast_ws({"event": "new_alert", "alert": alert}),
+    on_patent_enrich=_ire_enrich,
     on_bulk_save=lambda alerts: asyncio.get_event_loop().run_in_executor(
         None, db.save_alerts_bulk, alerts
     ),
@@ -325,6 +337,49 @@ async def _broadcast_ws(message: Dict):
             dead.append(ws)
     for ws in dead:
         ws_clients.remove(ws)
+
+
+# ------------------------------------------------------------------ #
+#  Incident Response Engine — Endpoints                             #
+# ------------------------------------------------------------------ #
+
+@app.get("/api/incidents")
+async def get_incidents(status: Optional[str] = None, limit: int = 100):
+    return ire.get_incidents(status=status, limit=limit)
+
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident(incident_id: str):
+    inc = ire.get_incident(incident_id)
+    if not inc:
+        return {"error": "incident not found"}
+    return inc
+
+
+@app.post("/api/incidents/{incident_id}/status")
+async def update_incident_status(incident_id: str, request: Dict):
+    ok = await ire.update_incident_status(
+        incident_id,
+        request.get("status", "investigating"),
+        request.get("note", ""),
+    )
+    return {"success": ok}
+
+
+@app.get("/api/incidents/stats/summary")
+async def get_incident_stats():
+    return ire.get_stats()
+
+
+# ── Brancher IRE sur le flux d'alertes du BulkProcessor ─────────────────────
+
+async def _ire_enrich(alerts: List[Dict]) -> List[Dict]:
+    for alert in alerts:
+        incident = await ire.process_alert(alert)
+        if incident:
+            alert["incident_id"] = incident.id
+            alert["incident_severity"] = incident.severity.value
+    return alerts
 
 
 # ------------------------------------------------------------------ #

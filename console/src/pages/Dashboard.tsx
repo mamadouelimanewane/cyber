@@ -13,19 +13,21 @@ import DeceptionStatus from "../components/deception/DeceptionStatus";
 import ThreatIntelFeed from "../components/ThreatIntelFeed";
 import PatentDashboard from "../components/patent/PatentDashboard";
 import ScaleView from "../components/ScaleView";
+import IncidentView from "../components/IncidentView";
 import { useSecurityStore } from "../store/securityStore";
 import { connectWebSocket } from "../api/websocket";
 
-type TabId = "overview" | "killchain" | "hunter" | "deception" | "intel" | "patent" | "scale";
+type TabId = "overview" | "killchain" | "hunter" | "deception" | "intel" | "patent" | "scale" | "incidents";
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode; color: string }[] = [
-  { id: "overview", label: "Vue Générale", icon: <Activity className="w-4 h-4" />, color: "emerald" },
-  { id: "killchain", label: "Kill Chain AI", icon: <Target className="w-4 h-4" />, color: "red" },
-  { id: "hunter", label: "AI Threat Hunter", icon: <Brain className="w-4 h-4" />, color: "purple" },
-  { id: "deception", label: "Deception Engine", icon: <Eye className="w-4 h-4" />, color: "orange" },
-  { id: "intel", label: "Threat Intel", icon: <Globe className="w-4 h-4" />, color: "blue" },
-  { id: "patent", label: "IA Brevets", icon: <Lock className="w-4 h-4" />, color: "violet" },
-  { id: "scale", label: "Scale 10k", icon: <Globe className="w-4 h-4" />, color: "blue" },
+  { id: "overview",   label: "Vue Générale",    icon: <Activity className="w-4 h-4" />,      color: "emerald" },
+  { id: "killchain",  label: "Kill Chain AI",   icon: <Target className="w-4 h-4" />,         color: "red" },
+  { id: "hunter",     label: "AI Threat Hunter",icon: <Brain className="w-4 h-4" />,          color: "purple" },
+  { id: "deception",  label: "Deception Engine",icon: <Eye className="w-4 h-4" />,            color: "orange" },
+  { id: "intel",      label: "Threat Intel",    icon: <Globe className="w-4 h-4" />,          color: "blue" },
+  { id: "patent",     label: "IA Brevets",      icon: <Lock className="w-4 h-4" />,           color: "violet" },
+  { id: "scale",      label: "Scale 10k",       icon: <Globe className="w-4 h-4" />,          color: "blue" },
+  { id: "incidents",  label: "Incidents",       icon: <AlertTriangle className="w-4 h-4" />,  color: "red" },
 ];
 
 export default function Dashboard() {
@@ -152,6 +154,10 @@ export default function Dashboard() {
 
         {activeTab === "scale" && (
           <ScaleView />
+        )}
+
+        {activeTab === "incidents" && (
+          <IncidentView />
         )}
       </main>
     </div>
